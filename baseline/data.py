@@ -14,7 +14,8 @@ import glob
 import h5py
 import numpy as np
 from torch.utils.data import Dataset
-
+from model import knn
+import torch
 
 def download():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -91,8 +92,44 @@ class ModelNet40(Dataset):
 
 
 if __name__ == '__main__':
-    train = ModelNet40(1024)
+    '''train = ModelNet40(1024)
     test = ModelNet40(1024, 'test')
     for data, label in train:
         print(data.shape)
-        print(label.shape)
+        print(label.shape)'''
+        
+    B = 9840
+    N = 1024
+    K = 20
+    
+    data,_ = load_data('train')
+    print('data type:', type(data))
+    print('data shape:', data.shape)
+    data = data[:B,:N,:]
+    print('data shape:', data.shape)   #(10,1024,3)
+    data = torch.from_numpy(data)
+    data = data.view(B, -1, N)
+    
+    ne_idx = knn(data, K)
+    print('ne_idx shape:',ne_idx.shape)
+    #print('ne_idx:\n', ne_idx)
+    ne_idx = ne_idx.reshape(B*N*K)
+    print('ne_idx:', ne_idx)
+    
+    #device = torch.device('cuda')
+    #center_idx = torch.arange(0, N, device=device).view(1, N, 1).repeat(B, 1, K).reshape(B*N*K)
+    center_idx = torch.arange(0, N).view(1, N, 1).repeat(B, 1, K).reshape(B*N*K)
+    print('center_idx shape:', center_idx.shape)
+    print('center_idx:\n', center_idx)
+    
+    batch_idx = torch.arange(0, B).view(B,1,1).repeat(1,N,K).reshape(B*N*K)
+    print('batch_idx shape:', batch_idx.shape)
+    print('batch_idx:\n', batch_idx)    
+    
+    A = torch.zeros(N,N).view(1,N,N).repeat(B,1,1)
+    A[batch_idx,center_idx,ne_idx]=1
+    print('A.shape:', A.shape)
+    print('A[0]', A[0])
+    print('sum(A[0]):', torch.sum(A[0]))
+    
+    

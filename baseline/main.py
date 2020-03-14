@@ -17,12 +17,12 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from data import ModelNet40
-from model import PointNet, DGCNN
+from model import PointNet, DGCNN, SemiGCN
 import numpy as np
 from torch.utils.data import DataLoader
 from util import cal_loss, IOStream
 import sklearn.metrics as metrics
-
+import random
 
 def _init_():
     if not os.path.exists('checkpoints'):
@@ -35,6 +35,13 @@ def _init_():
     os.system('cp model.py checkpoints' + '/' + args.exp_name + '/' + 'model.py.backup')
     os.system('cp util.py checkpoints' + '/' + args.exp_name + '/' + 'util.py.backup')
     os.system('cp data.py checkpoints' + '/' + args.exp_name + '/' + 'data.py.backup')
+    
+def setup_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True    
 
 def train(args, io):
     train_loader = DataLoader(ModelNet40(partition='train', num_points=args.num_points), num_workers=8,
@@ -49,6 +56,8 @@ def train(args, io):
         model = PointNet(args).to(device)
     elif args.model == 'dgcnn':
         model = DGCNN(args).to(device)
+    elif args.model == 'semigcn':
+        model = SemiGCN(args).to(device)
     else:
         raise Exception("Not implemented")
     print(str(model))
@@ -77,7 +86,8 @@ def train(args, io):
             print("=> no checkpoint found at '{}'".format(args.resume))
             
     #scheduler = CosineAnnealingLR(opt, args.epochs, eta_min=args.lr, last_epoch=args.start_epoch-1)
-    scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=20, gamma=0.7)
+    scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=20, gamma=0.8)#0.7
+    #scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.9825, last_epoch=args.start_epoch-1)
     
     criterion = cal_loss
 
@@ -214,7 +224,7 @@ if __name__ == "__main__":
     parser.add_argument('--exp_name', type=str, default='exp', metavar='N',
                         help='Name of the experiment')
     parser.add_argument('--model', type=str, default='dgcnn', metavar='N',
-                        choices=['pointnet', 'dgcnn'],
+                        choices=['pointnet', 'dgcnn', 'semigcn'],
                         help='Model to use, [pointnet, dgcnn]')
     parser.add_argument('--dataset', type=str, default='modelnet40', metavar='N',
                         choices=['modelnet40'])
@@ -250,6 +260,13 @@ if __name__ == "__main__":
                         help='Pretrained model path')
     parser.add_argument('--resume', default='', type=str, metavar='PATH',
                         help='path to checkpoint (default: None)')
+    parser.add_argument('--K', type=int, default=1, 
+                        help='filter scale (receptive field size), must be > 0; 1 for GCN, >1 for ChebNet')
+    parser.add_argument('--adj_sq', action='store_true', default=False,
+                        help='use A^2 instead of A as an adjacency matrix')
+    parser.add_argument('--scale_identity', action='store_true', default=False,
+                        help='use 2I instead of I for self connections')
+
     args = parser.parse_args()
 
     _init_()
@@ -258,7 +275,7 @@ if __name__ == "__main__":
     io.cprint(str(args))
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()
-    torch.manual_seed(args.seed)
+    setup_seed(args.seed)
     if args.cuda:
         io.cprint(
             'Using GPU : ' + str(torch.cuda.current_device()) + ' from ' + str(torch.cuda.device_count()) + ' devices')
