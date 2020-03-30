@@ -17,6 +17,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+# from lib.non_local_concatenation import NONLocalBlock2D
+# from lib.non_local_gaussian import NONLocalBlock2D
+#from lib.non_local_embedded_gaussian import NONLocalBlock2D
+# from lib.non_local_dot_product import NONLocalBlock2D
 
 class STN3d(nn.Module):
     def __init__(self, channel):
@@ -107,6 +111,14 @@ def get_adj(x, k=20):
     
     return A
 
+def get_NLadj(x, k):
+    B, C, N = x.size()
+    
+    theta_x = x.permute(0, 2, 1)
+    f = torch.matmul(theta_x, x)
+    f = F.softmax(f, dim=-1)
+    return f
+
 class GraphConv(nn.Module):
     '''
     Graph Convolution Layer according to (T. Kipf and M. Welling, ICLR 2017) if K<=1
@@ -124,6 +136,7 @@ class GraphConv(nn.Module):
         super(GraphConv, self).__init__()
         #self.fc = nn.Linear(in_features=in_features * K * n_relations, out_features=out_features,bias=False)
         self.fc = nn.Conv1d(in_channels=in_features * K * n_relations, out_channels=out_features, kernel_size=1, bias=False)
+        #self.fc = nn.Conv1d(in_channels=in_features * 3 * n_relations, out_channels=out_features, kernel_size=1, bias=False)
         self.n_relations = n_relations
         assert K > 0, ('filter scale must be greater than 0', K)
         self.K = K
@@ -136,9 +149,10 @@ class GraphConv(nn.Module):
             Xt.append(torch.bmm(L, X))  # B,N,F
             for k in range(2, K):
                 Xt.append(2 * torch.bmm(L, Xt[k - 1]) - Xt[k - 2])  # B,N,F
-            Xt = torch.cat(Xt, dim=2)  # B,N,K,F
-            print('X.shape:', X.shape)
-            print('Xt.shape in chebyshev_basis:', Xt.shape)
+            Xt = torch.cat(Xt, dim=2)  # B,N,F
+            #Xt = torch.cat([Xt[0],Xt[1],Xt[4]], dim=2)  # B,N,F
+            #print('X.shape:', X.shape)
+            #print('Xt.shape in chebyshev_basis:', Xt.shape)
             return Xt
         else:
             # GCN
@@ -160,13 +174,18 @@ class GraphConv(nn.Module):
             if self.K < 2:
                 A_hat = A + I
         D_hat = (torch.sum(A_hat, 1) + 1e-5) ** (-0.5)
+        #D_hat = (torch.sum(A_hat, 1)) ** (-0.5)
         #print('D_hat.view(batch, N, 1) shape:', D_hat.view(batch, N, 1).shape)
         #print('A_hat shape:', A_hat.shape)
         L = D_hat.view(batch, N, 1) * A_hat * D_hat.view(batch, 1, N)
+        #D_hat = (torch.sum(A, 1)) ** (-0.5)
+        #L = D_hat.view(batch, N, 1) * A * D_hat.view(batch, 1, N)
         #print('L shape:', L.shape)
+        #print('L:\n',L)
+
         return L #(B,N,N)
 
-    def forward(self, x, A):
+    def forward(self, x, A):  #apply L and then apply fc
         #print('x:', x.shape, torch.sum(torch.abs(torch.sum(x, 2)) > 0))
         #print('A:', A.shape)
         if len(A.shape) == 3:
@@ -176,11 +195,70 @@ class GraphConv(nn.Module):
         #print('x before chebyshev_basis:', x.shape)
         for rel in range(self.n_relations):
             L = self.laplacian_batch(A[:, :, :, rel])
+            #L = torch.eye(x.shape[1]).to('cuda').unsqueeze(0).repeat(x.shape[0],1,1) #test of adapting to pointnet
+
             #x_hat.append(self.chebyshev_basis(L, x.permute(0, 2, 1), self.K))
             x_hat.append(self.chebyshev_basis(L, x, self.K))
         #print('before fc:', torch.cat(x_hat, 2).permute(0, 2, 1).shape)
-        x = self.fc(torch.cat(x_hat, 2).permute(0, 2, 1)) #maybe the axis should be 1
+        x = self.fc(torch.cat(x_hat, 2).permute(0, 2, 1)) 
         return x
+
+    '''def forward(self, x, A):   # apply fc and then apply L
+        #print('x:', x.shape, torch.sum(torch.abs(torch.sum(x, 2)) > 0))
+        #print('A:', A.shape)
+        if len(A.shape) == 3:
+            A = A.unsqueeze(3)
+        x_hat = []
+        x = self.fc(x) 
+        x = x.permute(0, 2, 1)    # B,N,F
+        #print('x before chebyshev_basis:', x.shape)
+        for rel in range(self.n_relations):
+            L = self.laplacian_batch(A[:, :, :, rel])
+            #L = torch.eye(x.shape[1]).to('cuda').unsqueeze(0).repeat(x.shape[0],1,1) #test of adapting to pointnet
+
+            #x_hat.append(self.chebyshev_basis(L, x.permute(0, 2, 1), self.K))
+            x_hat.append(self.chebyshev_basis(L, x, self.K))
+        #print('before fc:', torch.cat(x_hat, 2).permute(0, 2, 1).shape)
+        x = torch.cat(x_hat, 2).permute(0, 2, 1)
+        return x'''
+        
+    '''def forward(self, x, A):  #apply L and then apply fc, using Linear as fc
+        #print('x:', x.shape, torch.sum(torch.abs(torch.sum(x, 2)) > 0))
+        #print('A:', A.shape)
+        if len(A.shape) == 3:
+            A = A.unsqueeze(3)
+        x_hat = []
+        x = x.permute(0, 2, 1)    # B,N,F
+        #print('x before chebyshev_basis:', x.shape)
+        for rel in range(self.n_relations):
+            L = self.laplacian_batch(A[:, :, :, rel])
+            #L = torch.eye(x.shape[1]).to('cuda').unsqueeze(0).repeat(x.shape[0],1,1) #test of adapting to pointnet
+
+            #x_hat.append(self.chebyshev_basis(L, x.permute(0, 2, 1), self.K))
+            x_hat.append(self.chebyshev_basis(L, x, self.K))
+        #print('before fc:', torch.cat(x_hat, 2).permute(0, 2, 1).shape)
+        x = self.fc(torch.cat(x_hat, 2)).permute(0, 2, 1)
+        return x'''
+    
+    '''def forward(self, x, A):   # apply fc and then apply L,using Linear as fc
+        #print('x:', x.shape, torch.sum(torch.abs(torch.sum(x, 2)) > 0))
+        #print('A:', A.shape)
+        if len(A.shape) == 3:
+            A = A.unsqueeze(3)
+        x_hat = []
+        x = x.permute(0, 2, 1)    # B,N,F
+        x = self.fc(x) 
+        #print('x before chebyshev_basis:', x.shape)
+        for rel in range(self.n_relations):
+            L = self.laplacian_batch(A[:, :, :, rel])
+            #L = torch.eye(x.shape[1]).to('cuda').unsqueeze(0).repeat(x.shape[0],1,1) #test of adapting to pointnet
+
+            #x_hat.append(self.chebyshev_basis(L, x.permute(0, 2, 1), self.K))
+            x_hat.append(self.chebyshev_basis(L, x, self.K))
+        #print('before fc:', torch.cat(x_hat, 2).permute(0, 2, 1).shape)
+        x = torch.cat(x_hat, 2).permute(0, 2, 1)
+        return x'''
+
 
 
 
@@ -188,7 +266,7 @@ class SemiGCN(nn.Module):
     def __init__(self, args, output_channels=40):
         super(SemiGCN, self).__init__()
         self.args = args
-        self.stn = STN3d(channel=3)
+        #self.stn = STN3d(channel=3)
         self.conv1 = GraphConv(in_features=3,
                                out_features=64,
                                K=args.K,
@@ -234,11 +312,12 @@ class SemiGCN(nn.Module):
 
     def forward(self, x):
         B, D, N = x.size()
-        trans = self.stn(x)
+        '''trans = self.stn(x)
         x = x.transpose(2, 1)
         x = torch.bmm(x, trans)
-        x = x.transpose(2, 1)
-        A = get_adj(x)
+        x = x.transpose(2, 1)'''
+        #A = get_adj(x,k=self.args.k)
+        A = get_NLadj(x,k=self.args.k)
         x = F.relu(self.bn1(self.conv1(x, A)))
         x = F.relu(self.bn2(self.conv2(x, A)))
         x = F.relu(self.bn3(self.conv3(x, A)))
@@ -255,11 +334,12 @@ class SemiGCN(nn.Module):
         
         return x
     
+    
 class PointNet(nn.Module):
     def __init__(self, args, output_channels=40):
         super(PointNet, self).__init__()
         self.args = args
-        self.stn = STN3d(channel=3)
+        #self.stn = STN3d(channel=3)
         self.conv1 = nn.Conv1d(3, 64, kernel_size=1, bias=False)
         self.conv2 = nn.Conv1d(64, 64, kernel_size=1, bias=False)
         self.conv3 = nn.Conv1d(64, 64, kernel_size=1, bias=False)
@@ -284,10 +364,10 @@ class PointNet(nn.Module):
 
     def forward(self, x):
         B, D, N = x.size()
-        trans = self.stn(x)
+        '''trans = self.stn(x)
         x = x.transpose(2, 1)
         x = torch.bmm(x, trans)
-        x = x.transpose(2, 1)
+        x = x.transpose(2, 1)'''
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))
@@ -302,72 +382,4 @@ class PointNet(nn.Module):
         x = F.relu(self.bn7(self.dropout(self.fc2(x))))
         x = self.fc3(x)
         
-        return x
-
-
-class DGCNN(nn.Module):
-    def __init__(self, args, output_channels=40):
-        super(DGCNN, self).__init__()
-        self.args = args
-        self.k = args.k
-        
-        self.bn1 = nn.BatchNorm2d(64)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.bn4 = nn.BatchNorm2d(256)
-        self.bn5 = nn.BatchNorm1d(args.emb_dims)
-
-        self.conv1 = nn.Sequential(nn.Conv2d(6, 64, kernel_size=1, bias=False),
-                                   self.bn1,
-                                   nn.LeakyReLU(negative_slope=0.2))
-        self.conv2 = nn.Sequential(nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
-                                   self.bn2,
-                                   nn.LeakyReLU(negative_slope=0.2))
-        self.conv3 = nn.Sequential(nn.Conv2d(64*2, 128, kernel_size=1, bias=False),
-                                   self.bn3,
-                                   nn.LeakyReLU(negative_slope=0.2))
-        self.conv4 = nn.Sequential(nn.Conv2d(128*2, 256, kernel_size=1, bias=False),
-                                   self.bn4,
-                                   nn.LeakyReLU(negative_slope=0.2))
-        self.conv5 = nn.Sequential(nn.Conv1d(512, args.emb_dims, kernel_size=1, bias=False),
-                                   self.bn5,
-                                   nn.LeakyReLU(negative_slope=0.2))
-        self.linear1 = nn.Linear(args.emb_dims*2, 512, bias=False)
-        self.bn6 = nn.BatchNorm1d(512)
-        self.dp1 = nn.Dropout(p=args.dropout)
-        self.linear2 = nn.Linear(512, 256)
-        self.bn7 = nn.BatchNorm1d(256)
-        self.dp2 = nn.Dropout(p=args.dropout)
-        self.linear3 = nn.Linear(256, output_channels)
-
-    def forward(self, x):
-        batch_size = x.size(0)
-        x = get_graph_feature(x, k=self.k)
-        x = self.conv1(x)
-        x1 = x.max(dim=-1, keepdim=False)[0]
-
-        x = get_graph_feature(x1, k=self.k)
-        x = self.conv2(x)
-        x2 = x.max(dim=-1, keepdim=False)[0]
-
-        x = get_graph_feature(x2, k=self.k)
-        x = self.conv3(x)
-        x3 = x.max(dim=-1, keepdim=False)[0]
-
-        x = get_graph_feature(x3, k=self.k)
-        x = self.conv4(x)
-        x4 = x.max(dim=-1, keepdim=False)[0]
-
-        x = torch.cat((x1, x2, x3, x4), dim=1)
-
-        x = self.conv5(x)
-        x1 = F.adaptive_max_pool1d(x, 1).view(batch_size, -1)
-        x2 = F.adaptive_avg_pool1d(x, 1).view(batch_size, -1)
-        x = torch.cat((x1, x2), 1)
-
-        x = F.leaky_relu(self.bn6(self.linear1(x)), negative_slope=0.2)
-        x = self.dp1(x)
-        x = F.leaky_relu(self.bn7(self.linear2(x)), negative_slope=0.2)
-        x = self.dp2(x)
-        x = self.linear3(x)
         return x

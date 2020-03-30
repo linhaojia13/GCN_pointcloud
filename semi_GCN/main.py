@@ -17,12 +17,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from data import ModelNet40
-from model import PointNet, DGCNN, SemiGCN
+from model import PointNet, SemiGCN
 import numpy as np
 from torch.utils.data import DataLoader
 from util import cal_loss, IOStream
 import sklearn.metrics as metrics
 import random
+import time
 
 def _init_():
     if not os.path.exists('checkpoints'):
@@ -54,8 +55,6 @@ def train(args, io):
     #Try to load models
     if args.model == 'pointnet':
         model = PointNet(args).to(device)
-    elif args.model == 'dgcnn':
-        model = DGCNN(args).to(device)
     elif args.model == 'semigcn':
         model = SemiGCN(args).to(device)
     else:
@@ -97,6 +96,7 @@ def train(args, io):
         ####################
         # Train
         ####################
+        start = time.time()
         train_loss = 0.0
         count = 0.0
         model.train()
@@ -119,12 +119,14 @@ def train(args, io):
         scheduler.step()
         train_true = np.concatenate(train_true)
         train_pred = np.concatenate(train_pred)
-        outstr = 'Train %d, loss: %.6f, train acc: %.6f, train avg acc: %.6f' % (epoch,
+        end = time.time()
+        outstr = 'Train %d, loss: %.6f, train acc: %.6f, train avg acc: %.6f, time: %.6f' % (epoch,
                                                                                  train_loss*1.0/count,
                                                                                  metrics.accuracy_score(
                                                                                      train_true, train_pred),
                                                                                  metrics.balanced_accuracy_score(
-                                                                                     train_true, train_pred))
+                                                                                     train_true, train_pred),
+                                                                                         end-start)
         io.cprint(outstr)
         if epoch%10 == 0:
             # save running checkpoint per 10 epoch
@@ -136,6 +138,7 @@ def train(args, io):
         ####################
         # Test
         ####################
+        start = time.time()
         test_loss = 0.0
         count = 0.0
         model.eval()
@@ -156,10 +159,12 @@ def train(args, io):
         test_pred = np.concatenate(test_pred)
         test_acc = metrics.accuracy_score(test_true, test_pred)
         avg_per_class_acc = metrics.balanced_accuracy_score(test_true, test_pred)
-        outstr = 'Test %d, loss: %.6f, test acc: %.6f, test avg acc: %.6f' % (epoch,
+        end = time.time()
+        outstr = 'Test %d, loss: %.6f, test acc: %.6f, test avg acc: %.6f, time: %.6f' % (epoch,
                                                                               test_loss*1.0/count,
                                                                               test_acc,
-                                                                              avg_per_class_acc)
+                                                                              avg_per_class_acc,
+                                                                              end-start)
         io.cprint(outstr)
         if test_acc >= best_test_acc:
             best_test_acc = test_acc
@@ -177,8 +182,6 @@ def test(args, io):
     #Try to load models
     if args.model == 'pointnet':
         model = PointNet(args).to(device)
-    elif args.model == 'dgcnn':
-        model = DGCNN(args).to(device)
     else:
         raise Exception("Not implemented")
     print(str(model))
